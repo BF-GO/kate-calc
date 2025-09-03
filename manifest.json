@@ -1,0 +1,22 @@
+{
+	"manifest_version": 3,
+	"name": "Kate-laskin",
+	"version": "1.2.0",
+	"description": "Laske myyntihinta kateprosentilla tai kustannuslisällä. ALV, pyöristys, historia.",
+	"action": { "default_title": "Avaa Kate-laskin" },
+	"permissions": ["activeTab", "storage", "clipboardWrite", "contextMenus"],
+	"background": { "service_worker": "background.js", "type": "module" },
+	"content_scripts": [
+		{
+			"matches": ["<all_urls>"],
+			"js": ["content.js"],
+			"run_at": "document_idle"
+		}
+	],
+	"commands": {
+		"toggle-calculator": {
+			"suggested_key": { "default": "Ctrl+Shift+K" },
+			"description": "Näytä/piilota Kate-laskin"
+		}
+	}
+}
