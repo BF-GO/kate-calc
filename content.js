@@ -1,6 +1,15 @@
 (() => {
 	'use strict';
 
+	const LOG = (...a) => console.debug('KATE:', ...a);
+
+	const SINGLETON_ID = '__KATE_PANEL_HOST__';
+	if (window[SINGLETON_ID]) {
+		LOG('panel already injected');
+		return;
+	}
+	window[SINGLETON_ID] = true;
+
 	const STORAGE_KEYS = Object.freeze({
 		pos: 'katePanelPos',
 		state: 'katePanelState',
@@ -8,7 +17,6 @@
 	});
 	const MAX_HISTORY = 20;
 	const EPS_MONEY = 0.005;
-	const EPS_PERCENT = 0.05;
 
 	function parseNumLoose(v) {
 		if (v == null) return NaN;
@@ -27,37 +35,60 @@
 		const n = Number(s);
 		return Number.isFinite(n) ? n : NaN;
 	}
-
 	const roundTo = (n, d = 2) =>
 		Number.isFinite(n) ? Math.round(n * 10 ** d) / 10 ** d : NaN;
 	const fmt2 = (n) => (Number.isFinite(n) ? roundTo(n, 2).toString() : '');
 	const fmt1 = (n) => (Number.isFinite(n) ? roundTo(n, 1).toString() : '');
-
 	const nearEq = (a, b, eps) =>
 		Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= eps;
 
+	let memStore = {
+		[STORAGE_KEYS.pos]: undefined,
+		[STORAGE_KEYS.state]: undefined,
+		[STORAGE_KEYS.history]: [],
+	};
+	const hasChromeStorage =
+		typeof chrome !== 'undefined' && chrome?.storage?.local;
+
 	async function lsGet(key) {
-		try {
-			const obj = await chrome.storage.local.get(key);
-			return obj?.[key];
-		} catch {
-			return undefined;
+		if (hasChromeStorage) {
+			try {
+				const obj = await chrome.storage.local.get(key);
+				const val = obj?.[key] ?? memStore[key];
+				LOG('lsGet', key, val);
+				return val;
+			} catch (e) {
+				LOG('lsGet failed, fallback', key, e);
+				return memStore[key];
+			}
 		}
+		LOG('lsGet (mem)', key, memStore[key]);
+		return memStore[key];
 	}
 	async function lsSet(obj) {
-		try {
-			await chrome.storage.local.set(obj);
-		} catch {}
+		Object.assign(memStore, obj);
+		LOG('lsSet mem', obj);
+		if (hasChromeStorage) {
+			try {
+				await chrome.storage.local.set(obj);
+				LOG('lsSet chrome ok');
+			} catch (e) {
+				LOG('lsSet chrome failed', e);
+			}
+		}
 	}
 
 	let hostEl = null;
 
-	chrome.runtime.onMessage.addListener((msg) => {
-		if (msg?.type === 'TOGGLE_KATE_PANEL') togglePanel();
-	});
+	if (typeof chrome !== 'undefined' && chrome?.runtime?.onMessage) {
+		chrome.runtime.onMessage.addListener((msg) => {
+			if (msg?.type === 'TOGGLE_KATE_PANEL') togglePanel();
+		});
+	}
 
 	async function togglePanel() {
 		if (hostEl && document.body.contains(hostEl)) {
+			LOG('remove panel');
 			hostEl.remove();
 			hostEl = null;
 			return;
@@ -69,7 +100,12 @@
 
 	function createPanel(savedPos, savedState) {
 		hostEl = document.createElement('div');
-		Object.assign(hostEl.style, { position: 'fixed', zIndex: '2147483647' });
+		Object.assign(hostEl.style, {
+			position: 'fixed',
+			zIndex: '2147483647',
+			pointerEvents: 'none',
+			inset: '0 0 auto auto',
+		});
 		const root = hostEl.attachShadow({ mode: 'open' });
 
 		root.innerHTML = `
@@ -81,6 +117,8 @@
 		}px; width: 360px;
           background: rgba(28,28,32,0.9); color: #e5e7eb; border: 1px solid rgba(255,255,255,.12);
           border-radius: 12px; backdrop-filter: blur(6px); box-shadow: 0 10px 30px rgba(0,0,0,.35);
+          /* Критично: сама панель кликабельна */
+          pointer-events: auto;
         }
         .bar {
           cursor: move; user-select: none; padding: 10px 12px; display:flex; align-items:center; justify-content:space-between;
@@ -109,7 +147,6 @@
         .err { color:#fca5a5; font-size:12px; min-height:16px; }
         .foot { display:flex; gap:8px; margin-top:6px; justify-content: space-between; align-items:center; }
         a.link { color:#a5b4fc; text-decoration:none; font-size:12px; }
-        .k { font-variant-numeric: tabular-nums; }
 
         /* inputs */
         .num-wrap { position: relative; }
@@ -127,7 +164,7 @@
         .spinbtn:hover { background:rgba(255,255,255,.12); } .spinbtn:active { background:rgba(255,255,255,.18); }
         .spinbtn svg { width:12px; height:12px; opacity:.9; }
 
-        /* tooltips on tabs */
+        /* tooltips */
         .tooltip { position: relative; }
         .tooltip::after {
           content: attr(data-tip);
@@ -161,11 +198,13 @@
 
         .no-drag { pointer-events: auto; }
 
-        /* toast */
+        /* toast: теперь ВНУТРИ панели и не ловит клики */
         .toast {
-          position: fixed; right: 14px; bottom: 14px; background: rgba(17,17,20,0.98); color:#e5e7eb;
+          position: absolute; right: 12px; bottom: 12px;
+          background: rgba(17,17,20,0.98); color:#e5e7eb;
           border:1px solid rgba(255,255,255,.12); padding:8px 12px; border-radius:10px; box-shadow: 0 10px 20px rgba(0,0,0,.35);
           opacity:0; transform: translateY(8px); transition: opacity .15s ease, transform .15s ease;
+          pointer-events: none; z-index: 2;
         }
         .toast.show { opacity:1; transform: translateY(0); }
       </style>
@@ -174,8 +213,8 @@
         <div class="bar" id="drag">
           <div class="title">Kate & Lisäys</div>
           <div class="no-drag">
-            <button class="btn" id="historyBtn" title="Historia"><span class="icon">🕘</span>Historia</button>
-            <button class="btn-ghost close" id="close" title="Sulje" aria-label="Sulje">×</button>
+            <button class="btn" id="historyBtn" title="Historia" type="button"><span class="icon">🕘</span>Historia</button>
+            <button class="btn-ghost close" id="close" title="Sulje" aria-label="Sulje" type="button">×</button>
           </div>
         </div>
 
@@ -186,8 +225,8 @@
               <div class="num-wrap">
                 <input type="number" id="cost" class="num" min="0" step="0.01" inputmode="decimal" placeholder="esim. 10,00" aria-label="Ostohinta">
                 <div class="spinbox no-drag" data-for="cost">
-                  <button class="spinbtn" data-dir="up" aria-label="Kasvata"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 14l5-5 5 5"/></svg></button>
-                  <button class="spinbtn" data-dir="down" aria-label="Vähennä"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5"/></svg></button>
+                  <button class="spinbtn" data-dir="up" aria-label="Kasvata" type="button"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 14l5-5 5 5"/></svg></button>
+                  <button class="spinbtn" data-dir="down" aria-label="Vähennä" type="button"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5"/></svg></button>
                 </div>
               </div>
             </div>
@@ -196,8 +235,8 @@
               <div class="num-wrap">
                 <input type="number" id="price" class="num" min="0" step="0.01" inputmode="decimal" placeholder="laske tai syötä" aria-label="Myyntihinta">
                 <div class="spinbox no-drag" data-for="price">
-                  <button class="spinbtn" data-dir="up" aria-label="Kasvata"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 14l5-5 5 5"/></svg></button>
-                  <button class="spinbtn" data-dir="down" aria-label="Vähennä"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5"/></svg></button>
+                  <button class="spinbtn" data-dir="up" aria-label="Kasvata" type="button"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 14l5-5 5 5"/></svg></button>
+                  <button class="spinbtn" data-dir="down" aria-label="Vähennä" type="button"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5"/></svg></button>
                 </div>
               </div>
             </div>
@@ -217,8 +256,8 @@
                 <div class="num-wrap">
                   <input type="number" id="kate" class="num" min="0" max="99.9999" step="0.1" inputmode="decimal" placeholder="esim. 99" aria-label="Kate prosentti">
                   <div class="spinbox no-drag" data-for="kate">
-                    <button class="spinbtn" data-dir="up" aria-label="Kasvata"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 14l5-5 5 5"/></svg></button>
-                    <button class="spinbtn" data-dir="down" aria-label="Vähennä"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5"/></svg></button>
+                    <button class="spinbtn" data-dir="up" aria-label="Kasvata" type="button"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 14l5-5 5 5"/></svg></button>
+                    <button class="spinbtn" data-dir="down" aria-label="Vähennä" type="button"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5"/></svg></button>
                   </div>
                 </div>
                 <div class="err" id="errKate"></div>
@@ -233,8 +272,8 @@
                 <div class="num-wrap">
                   <input type="number" id="markup" class="num" min="-99.99" step="0.1" inputmode="decimal" placeholder="esim. 99" aria-label="Lisäys prosentti">
                   <div class="spinbox no-drag" data-for="markup">
-                    <button class="spinbtn" data-dir="up" aria-label="Kasvata"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 14l5-5 5 5"/></svg></button>
-                    <button class="spinbtn" data-dir="down" aria-label="Vähennä"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5"/></svg></button>
+                    <button class="spinbtn" data-dir="up" aria-label="Kasvata" type="button"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 14l5-5 5 5"/></svg></button>
+                    <button class="spinbtn" data-dir="down" aria-label="Vähennä" type="button"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 10l5 5 5-5"/></svg></button>
                   </div>
                 </div>
                 <div class="err" id="errMarkup"></div>
@@ -245,7 +284,7 @@
           <div class="foot">
             <div class="derived" id="derivedLine">Johdettu: —</div>
             <div>
-              <button id="copy" class="btn no-drag" aria-label="Kopioi myyntihinta">Kopioi</button>
+              <button id="copy" class="btn no-drag" aria-label="Kopioi myyntihinta" type="button">Kopioi</button>
               <a class="link no-drag" id="resetPos" href="#" title="Palauta sijainti">Palauta sijainti</a>
             </div>
           </div>
@@ -253,8 +292,8 @@
           <div class="hist-panel" id="histPanel" aria-live="polite">
             <div id="histList"></div>
             <div class="hist-actions">
-              <button class="btn" id="saveToHist">Tallenna</button>
-              <button class="btn" id="clearHist">Tyhjennä</button>
+              <button class="btn" id="saveToHist" type="button">Tallenna</button>
+              <button class="btn" id="clearHist" type="button">Tyhjennä</button>
             </div>
           </div>
         </div>
@@ -329,7 +368,9 @@
 		drag.addEventListener('pointerup', async (e) => {
 			if (!dragging) return;
 			dragging = false;
-			drag.releasePointerCapture(e.pointerId);
+			try {
+				drag.releasePointerCapture(e.pointerId);
+			} catch {}
 			const rect = wrap.getBoundingClientRect();
 			const { left, top } = clampToViewport(rect.left, rect.top);
 			wrap.style.left = left + 'px';
@@ -349,9 +390,13 @@
 		});
 		resetPos.addEventListener('click', async (e) => {
 			e.preventDefault();
-			wrap.style.left = '24px';
-			wrap.style.top = '24px';
-			await lsSet({ [STORAGE_KEYS.pos]: { left: 24, top: 24 } });
+			const left = 24,
+				top = 24;
+			LOG('resetPos click', { left, top });
+			wrap.style.left = left + 'px';
+			wrap.style.top = top + 'px';
+			await lsSet({ [STORAGE_KEYS.pos]: { left, top } });
+			showToast('Sijainti palautettu');
 		});
 
 		let mode = savedState?.mode || 'kate';
@@ -384,7 +429,6 @@
 				(mode === 'kate' ? tabKate : tabMarkup).focus();
 			}
 		}
-
 		tabKate.addEventListener('click', () => setMode('kate'));
 		tabMarkup.addEventListener('click', () => setMode('markup'));
 		tabKate.addEventListener('keydown', (e) => tabKeyHandler(e, 'kate'));
@@ -530,16 +574,19 @@
 		}
 
 		historyBtn.addEventListener('click', async () => {
-			await pushCurrentToHistory(false);
+			LOG('history open');
 			await renderHistory();
 			histPanel.style.display =
 				histPanel.style.display === 'none' || !histPanel.style.display
 					? 'block'
 					: 'none';
 		});
-		clearHistBtn.addEventListener('click', async () => {
+		clearHistBtn.addEventListener('click', async (e) => {
+			e.preventDefault();
+			LOG('clear history click');
 			await lsSet({ [STORAGE_KEYS.history]: [] });
 			await renderHistory();
+			showToast('Historia tyhjennetty');
 		});
 		saveToHistBtn.addEventListener('click', () => pushCurrentToHistory(true));
 
@@ -589,6 +636,7 @@
 
 		async function renderHistory() {
 			const hist = await getHistory();
+			LOG('renderHistory', hist.length);
 			histList.innerHTML = '';
 			if (!hist.length) {
 				histList.innerHTML = `<div class="muted">Ei merkintöjä.</div>`;
@@ -598,6 +646,7 @@
 			hist.forEach((h, idx) => {
 				const row = document.createElement('div');
 				row.className = 'hist-row';
+
 				const date = new Date(h.t);
 				const when = date.toLocaleString(undefined, {
 					hour: '2-digit',
@@ -620,7 +669,7 @@
 				right.className = 'row-actions';
 				right.innerHTML = `<span class="muted">#${
 					idx + 1
-				}</span> <button class="del" title="Poista">Poista</button>`;
+				}</span> <button class="del" title="Poista" type="button">Poista</button>`;
 
 				row.appendChild(left);
 				row.appendChild(right);
@@ -636,6 +685,7 @@
 					compute();
 					persistState();
 				});
+
 				right.querySelector('.del').addEventListener('click', async (e) => {
 					e.stopPropagation();
 					const list = await getHistory();
@@ -655,14 +705,18 @@
 				hostEl = null;
 			}
 			if (e.altKey && (e.key === 'r' || e.key === 'R')) {
-				wrap.style.left = '24px';
-				wrap.style.top = '24px';
-				lsSet({ [STORAGE_KEYS.pos]: { left: 24, top: 24 } });
+				const left = 24,
+					top = 24;
+				wrap.style.left = left + 'px';
+				wrap.style.top = top + 'px';
+				lsSet({ [STORAGE_KEYS.pos]: { left, top } });
 			}
 		});
 
-		document.body.appendChild(hostEl);
 		setMode(mode);
 		compute();
 	}
+
+	window.toggleKatePanel = togglePanel;
+	LOG('content ready');
 })();
