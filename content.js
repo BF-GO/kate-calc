@@ -132,7 +132,7 @@
         }
         .btn:hover { background: rgba(255,255,255,.12); }
         .btn-ghost { border:none; background:transparent; }
-        .close { font-size:18px; padding:2px 6px; line-height:1; border-radius:8px; }
+        .close { font-size:23px; padding:0 6px 6px 6px; line-height:1; border-radius:8px; color: white; cursor:pointer; }
         .close:hover { background: rgba(255,255,255,.1); }
         .icon { margin-right:6px; opacity:.9 }
         .body { padding: 12px; }
